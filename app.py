@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
+import requests
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Albion Hub Premium v4.0", layout="wide", page_icon="⚔️")
+st.set_page_config(page_title="Albion Hub Premium v5.0", layout="wide", page_icon="👑")
 st.markdown("""
     <style>
     .stApp { background-color: #0e1117; color: #ffffff; }
@@ -11,7 +12,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNCIONES DE BASE DE DATOS Y API ---
+# --- BASE DE DATOS Y FUNCIONES ---
 def obtener_items():
     conn = sqlite3.connect('albion_items.db')
     df = pd.read_sql_query("SELECT * FROM items", conn)
@@ -21,12 +22,11 @@ def obtener_items():
 def obtener_spec_usuario(discord_id, nombre_item):
     conn = sqlite3.connect('albion_items.db')
     cursor = conn.cursor()
-    # Evitar error si la tabla no existe aún
     try:
         cursor.execute("SELECT spec_nivel FROM user_specs WHERE discord_id=? AND nombre_item=?", (discord_id, nombre_item))
-        resultado = cursor.fetchone()
+        res = cursor.fetchone()
         conn.close()
-        return resultado[0] if resultado else 0
+        return res[0] if res else 0
     except:
         conn.close()
         return 0
@@ -34,9 +34,9 @@ def obtener_spec_usuario(discord_id, nombre_item):
 def guardar_specs(discord_id, df_specs):
     conn = sqlite3.connect('albion_items.db')
     cursor = conn.cursor()
-    for index, row in df_specs.iterrows():
-        cursor.execute('''INSERT OR REPLACE INTO user_specs (discord_id, nombre_item, spec_nivel) 
-                          VALUES (?, ?, ?)''', (discord_id, row['Ítem'], row['Nivel de Spec']))
+    for _, row in df_specs.iterrows():
+        cursor.execute('INSERT OR REPLACE INTO user_specs (discord_id, nombre_item, spec_nivel) VALUES (?, ?, ?)', 
+                       (discord_id, row['Ítem'], row['Nivel de Spec']))
     conn.commit()
     conn.close()
 
@@ -45,179 +45,187 @@ def get_image(item_id, size=150):
         return "https://render.albiononline.com/v1/item/T4_TRASH.png?size=150"
     return f"https://render.albiononline.com/v1/item/{item_id}.png?size={size}"
 
+# --- MÓDULO 3: API DEL MERCADO NEGRO ---
+@st.cache_data(ttl=60) # Se actualiza cada 60 segundos
+def escanear_mercado_negro():
+    # Escaneamos 3 items de alta demanda en el BM (Black Market)
+    url = "https://west.albion-online-data.com/api/v2/stats/prices/T6_ARMOR_LEATHER_SET2,T6_HEAD_LEATHER_SET3,T6_MAIN_SWORD.json?locations=Black Market"
+    try:
+        respuesta = requests.get(url, timeout=5).json()
+        resultados = []
+        for item in respuesta:
+            if item['sell_price_min'] > 0:
+                resultados.append({"ID": item['item_id'], "Precio BM": item['sell_price_min']})
+        return pd.DataFrame(resultados)
+    except:
+        return pd.DataFrame()
+
+# --- MÓDULO 1: EL MEGA GPS (Algoritmo BFS de Búsqueda de Rutas) ---
+MAPAS_ALBION = {
+    # Continente Real
+    "Lymhurst": ["Bosque Yew (Am)", "Valle Longtimber (Am)"],
+    "Bosque Yew (Am)": ["Lymhurst", "Murkweald (ROJA)"],
+    "Valle Longtimber (Am)": ["Lymhurst", "Estepa Roastcopse (ROJA)"],
+    "Estepa Roastcopse (ROJA)": ["Valle Longtimber (Am)", "Caerleon (Mercado Negro)"],
+    "Murkweald (ROJA)": ["Bosque Yew (Am)", "Caerleon (Mercado Negro)"],
+    "Caerleon (Mercado Negro)": ["Estepa Roastcopse (ROJA)", "Murkweald (ROJA)"],
+    # Zona Negra (Outlands)
+    "Portal Lymhurst (Negra)": ["Awake Wood (T5)", "Oasis de Fuego (T6)"],
+    "Awake Wood (T5)": ["Portal Lymhurst (Negra)", "Arthur's Rest"],
+    "Oasis de Fuego (T6)": ["Portal Lymhurst (Negra)", "Arthur's Rest"],
+    "Arthur's Rest": ["Awake Wood (T5)", "Oasis de Fuego (T6)", "Zona Profunda T8"],
+    "Zona Profunda T8": ["Arthur's Rest", "Hideout del Gremio"]
+}
+
+def encontrar_ruta(inicio, fin):
+    visitados = []
+    cola = [[inicio]]
+    if inicio == fin: return [inicio]
+    while cola:
+        camino = cola.pop(0)
+        nodo = camino[-1]
+        if nodo not in visitados:
+            vecinos = MAPAS_ALBION.get(nodo, [])
+            for vecino in vecinos:
+                nuevo_camino = list(camino)
+                nuevo_camino.append(vecino)
+                cola.append(nuevo_camino)
+                if vecino == fin: return nuevo_camino
+            visitados.append(nodo)
+    return []
+
 # --- INTERFAZ LATERAL ---
 with st.sidebar:
-    st.title("🛡️ Panel Premium")
+    st.title("🛡️ Albion Hub")
     if 'user' not in st.session_state:
-        st.session_state['user'] = "The Gonza"
+        st.session_state['user'] = "El Jefe"
         st.session_state['discord_id'] = "123456"
-        st.session_state['rol'] = "Premium"
+    st.write(f"👑 Usuario: **{st.session_state['user']}**")
+    menu = st.radio("Módulos Operativos:", ["🏠 Dashboard", "🎯 Mis Specs", "🧮 Calculadora Pro", "📝 Planificador", "🧭 Mega GPS"])
+
+# ==========================================
+# SECCIONES DE LA APLICACIÓN
+# ==========================================
+
+if menu == "🏠 Dashboard":
+    st.title("📈 Centro de Mando: Mercado Negro")
+    st.write("Escaneando órdenes de compra en tiempo real en Caerleon...")
     
-    st.write(f"Usuario: **{st.session_state['user']}**")
-    menu = st.radio("Secciones", ["🏠 Dashboard", "🎯 Mis Specs", "🧮 Calculadora Pro", "📝 Planificador Excel"])
+    df_bm = escanear_mercado_negro()
+    if not df_bm.empty:
+        col1, col2, col3 = st.columns(3)
+        cols = [col1, col2, col3]
+        for i, row in df_bm.iterrows():
+            if i < 3:
+                with cols[i]:
+                    st.image(get_image(row['ID']), width=80)
+                    st.metric(label=f"Demanda BM: {row['ID']}", value=f"{row['Precio BM']:,} Plata")
+    else:
+        st.warning("No se pudo conectar a los servidores de Albion Data Project en este momento.")
 
-# --- SECCIONES ---
-
-if menu == "🎯 Mis Specs":
-    st.title("🎯 Base de Datos de Maestrías (Specs)")
+elif menu == "🎯 Mis Specs":
+    st.title("🎯 Base de Datos de Maestrías")
     df_items = obtener_items()
     nombres_unicos = df_items['nombre_es'].drop_duplicates().tolist() if not df_items.empty else []
-    
     datos_tabla = [{"Ítem": n, "Nivel de Spec": obtener_spec_usuario(st.session_state['discord_id'], n)} for n in nombres_unicos]
-    df_specs = pd.DataFrame(datos_tabla)
     
-    st.info("Edita tus niveles y presiona Guardar.")
-    df_editado = st.data_editor(df_specs, use_container_width=True, num_rows="dynamic")
-    
+    df_editado = st.data_editor(pd.DataFrame(datos_tabla), use_container_width=True)
     if st.button("💾 Guardar Mis Specs", type="primary"):
         guardar_specs(st.session_state['discord_id'], df_editado)
-        st.success("¡Tus maestrías se han guardado!")
+        st.success("¡Maestrías sincronizadas!")
 
 elif menu == "🧮 Calculadora Pro":
-    st.title("🧮 Calculadora Visual")
+    st.title("🧮 Calculadora de Crafteo Visual")
     df_items = obtener_items()
     
-    if df_items.empty:
-        st.error("Base de datos vacía.")
-        st.stop()
+    if df_items.empty: st.stop()
 
-    col_sel1, col_sel2, col_sel3 = st.columns(3)
-    with col_sel1: item_nombre = st.selectbox("Objeto", df_items['nombre_es'].drop_duplicates().tolist())
-    with col_sel2: tier = st.selectbox("Tier", ["T4", "T5", "T6", "T7", "T8"], index=2)
-    with col_sel3: encantamiento = st.selectbox("Encantamiento", [".0", ".1", ".2", ".3", ".4"])
+    col1, col2 = st.columns(2)
+    with col1: 
+        item_nombre = st.selectbox("Objeto", df_items['nombre_es'].drop_duplicates().tolist())
+        tier = st.selectbox("Tier", ["T4", "T5", "T6", "T7", "T8"], index=2)
+    with col2:
+        usar_foco = st.toggle("⚡ Usar Foco (Incrementa RR)")
+        precio_venta = st.number_input("Precio de Venta Esperado", value=50000)
 
-    spec_actual = obtener_spec_usuario(st.session_state['discord_id'], item_nombre)
-    st.caption(f"🧠 *Tu Spec para {item_nombre} es nivel: **{spec_actual}***")
     st.divider()
-
-    enc_sufijo = f"@{encantamiento[-1]}" if encantamiento != ".0" else ""
-    c_img1, c_img2, c_img3 = st.columns(3)
-    
-    with c_img1:
-        st.image(get_image(f"{tier}_ARMOR_LEATHER_SET2{enc_sufijo}"), width=100)
-        precio_venta = st.number_input("Precio Venta", value=50000)
-    with c_img2:
-        st.image(get_image(f"{tier}_LEATHER{enc_sufijo}"), width=100)
-        precio_mat = st.number_input("Precio Material (1 ud)", value=2500)
-    with c_img3:
-        st.image(get_image(f"{tier}_JOURNAL_HUNTER_EMPTY"), width=100)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.image(get_image(f"{tier}_LEATHER"), width=80)
+        precio_mat = st.number_input("Precio Material", value=2500)
+    with c2:
+        st.image(get_image(f"{tier}_JOURNAL_HUNTER_EMPTY"), width=80)
         precio_diario_vacio = st.number_input("Diario Vacío", value=1500)
-        retorno_diario = st.number_input("Diario Lleno", value=6500)
+        precio_diario_lleno = st.number_input("Diario Lleno", value=6500)
+    with c3:
+        st.image(get_image(f"T4_TRASH"), width=80)
+        precio_artefacto = st.number_input("Precio Artefacto (Si requiere)", value=0)
 
-    st.divider()
-    usar_foco = st.toggle("⚡ Usar Foco")
+    # Matemáticas
     rr = 43.5 if usar_foco else 15.2
-    
-    costo_materiales = (precio_mat * 16) + precio_diario_vacio
+    costo_mat = (precio_mat * 16) + precio_diario_vacio + precio_artefacto
     ahorro = (precio_mat * 16) * (rr / 100)
-    costo_final = costo_materiales - ahorro
-    profit = (precio_venta + retorno_diario) - costo_final
+    costo_real = costo_mat - ahorro
+    profit = (precio_venta + precio_diario_lleno) - costo_real
 
-    if profit > 0:
-        st.success(f"💰 PROFIT NETO: +{profit:,.0f} Plata")
-    else:
-        st.error(f"📉 PÉRDIDA NETA: {profit:,.0f} Plata")
+    if profit > 0: st.success(f"💰 PROFIT UNITARIO: +{profit:,.0f} Plata")
+    else: st.error(f"📉 PÉRDIDA: {profit:,.0f} Plata")
 
-# --- NUEVO: PLANIFICADOR TIPO EXCEL (Puntos 3 y 4) ---
-elif menu == "📝 Planificador Excel":
-    st.title("📝 Planificador de Producción en Masa")
-    st.write("Añade los ítems que deseas craftear. El sistema leerá tus Specs automáticamente.")
+elif menu == "📝 Planificador":
+    st.title("🛒 Planificador de Producción Masivo")
+    st.write("MÓDULO 2: Integración de Diarios y Artefactos a la lista de compras.")
     
     df_items = obtener_items()
-    if df_items.empty:
-        st.warning("No hay ítems en la base de datos.")
-        st.stop()
-        
-    lista_items = df_items['nombre_es'].drop_duplicates().tolist()
+    lista_items = df_items['nombre_es'].drop_duplicates().tolist() if not df_items.empty else ["Vacío"]
 
-    # Crear tabla vacía en memoria si no existe
     if 'plan_data' not in st.session_state:
-        st.session_state['plan_data'] = pd.DataFrame({
-            "Fabricar": [True, False, False],
-            "Ítem": [lista_items[0], lista_items[0], lista_items[0]],
-            "Cantidad": [10, 0, 0],
-            "Precio Venta": [50000, 0, 0],
-            "Costo Material (x1)": [2500, 0, 0],
-            "Usar Foco": [False, False, False]
-        })
+        st.session_state['plan_data'] = pd.DataFrame({"Fabricar": [True, False], "Ítem": [lista_items[0], lista_items[0]], "Cantidad": [10, 0], "Precio Venta": [50000, 0], "Costo Material (x1)": [2500, 0], "Usa Artefacto": [False, False]})
 
-    # Configurar el editor de datos (La tabla interactiva)
-    config_columnas = {
-        "Ítem": st.column_config.SelectboxColumn("Objeto a Fabricar", options=lista_items, required=True),
-        "Cantidad": st.column_config.NumberColumn("Cant.", min_value=0, step=1),
-        "Precio Venta": st.column_config.NumberColumn("Venta (Plata)", min_value=0),
-        "Costo Material (x1)": st.column_config.NumberColumn("Costo Mat.", min_value=0)
-    }
-
-    df_plan = st.data_editor(
-        st.session_state['plan_data'], 
-        column_config=config_columnas, 
-        num_rows="dynamic", 
-        use_container_width=True
-    )
+    df_plan = st.data_editor(st.session_state['plan_data'], num_rows="dynamic", use_container_width=True)
     st.session_state['plan_data'] = df_plan
 
-    if st.button("📊 Generar Reporte de Producción", type="primary"):
+    if st.button("📊 Generar Manifiesto de Compras", type="primary"):
         st.divider()
-        st.subheader("📋 Resumen Financiero")
+        st.subheader("📋 Lista de Compras Exacta")
         
-        profit_total_global = 0
-        materiales_totales = 0
+        mats_totales = 0
+        diarios_totales = 0
+        art_totales = 0
         
-        resultados = []
         for index, row in df_plan.iterrows():
             if row['Fabricar'] and row['Cantidad'] > 0:
-                item_seleccionado = row['Ítem']
-                cantidad = row['Cantidad']
-                p_venta = row['Precio Venta']
-                p_mat = row['Costo Material (x1)']
-                foco = row['Usar Foco']
-                
-                # Auto-detectar Spec
-                spec = obtener_spec_usuario(st.session_state['discord_id'], item_seleccionado)
-                rr = 43.5 if foco else 15.2
-                
-                # Matemáticas (Asumimos 16 recursos por item por defecto en la demo)
-                recursos_base = 16 * cantidad
-                materiales_totales += recursos_base
-                
-                costo_bruto = (p_mat * 16) * cantidad
-                ahorro = costo_bruto * (rr / 100)
-                costo_real = costo_bruto - ahorro
-                ingreso = p_venta * cantidad
-                profit_fila = ingreso - costo_real
-                
-                profit_total_global += profit_fila
-                
-                resultados.append({
-                    "Ítem": item_seleccionado,
-                    "Cant.": cantidad,
-                    "Spec": spec,
-                    "RR%": rr,
-                    "Costo Real": costo_real,
-                    "Ingreso Bruto": ingreso,
-                    "Profit Neto": profit_fila
-                })
+                mats_totales += (16 * row['Cantidad'])
+                diarios_totales += row['Cantidad'] # Asumimos 1 diario por item para simplificar
+                if row['Usa Artefacto']: art_totales += row['Cantidad']
         
-        if resultados:
-            df_resultados = pd.DataFrame(resultados)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.info(f"🪵 **Materiales Base:**\n### {mats_totales:,}")
+        with col2:
+            st.warning(f"📘 **Diarios Vacíos a Comprar:**\n### {diarios_totales:,}")
+        with col3:
+            st.error(f"🔮 **Artefactos a Comprar:**\n### {art_totales:,}")
             
-            # Formatear números para que se vean como dinero
-            st.dataframe(df_resultados.style.format({
-                "Costo Real": "{:,.0f}", 
-                "Ingreso Bruto": "{:,.0f}", 
-                "Profit Neto": "{:,.0f}"
-            }), use_container_width=True)
-            
-            col_r1, col_r2 = st.columns(2)
-            with col_r1:
-                st.success(f"### 🚀 PROFIT TOTAL ESTIMADO:\n### {profit_total_global:,.0f} Plata")
-            with col_r2:
-                st.info(f"### 📦 Materiales Brutos a Comprar:\n### {materiales_totales:,} Unidades")
-                st.caption("*(No incluye la devolución de recursos durante el crafteo)*")
-        else:
-            st.warning("Selecciona la casilla 'Fabricar' y pon una cantidad mayor a 0.")
+        st.success("Tus trabajadores ya pueden ir al mercado a comprar esto exactamente.")
 
-elif menu == "🏠 Dashboard":
-    st.title("🏠 Dashboard")
-    st.write("Bienvenido. Navega por el menú lateral.")
+elif menu == "🧭 Mega GPS":
+    st.title("🧭 Mega GPS Logístico (Royal & Outlands)")
+    st.write("MÓDULO 1: Selecciona tu origen y destino para encontrar la ruta más segura.")
+    
+    c1, c2 = st.columns(2)
+    mapas_disponibles = list(MAPAS_ALBION.keys())
+    with c1: origen = st.selectbox("Punto de Partida", mapas_disponibles, index=0)
+    with c2: destino = st.selectbox("Destino", mapas_disponibles, index=5)
+    
+    if st.button("📡 Trazar Ruta"):
+        ruta = encontrar_ruta(origen, destino)
+        if ruta:
+            st.success("✅ Ruta Encontrada:")
+            ruta_formateada = " ➡️ ".join([f"**{mapa}**" for mapa in ruta])
+            st.markdown(f"### {ruta_formateada}")
+            
+            peligro = sum([1 for m in ruta if "ROJA" in m or "Negra" in m or "T8" in m])
+            if peligro > 0:
+                st.warning(f"⚠️ Alerta: Cruzarás {peligro} zonas de letalidad (PvP Full Loot).")
+        else:
+            st.error("❌ No hay conexión segura entre estos mapas.")
